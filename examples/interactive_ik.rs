@@ -90,14 +90,20 @@ fn main() {
             .finalize()
             .into();
         let l6: k::Node<f32> = NodeBuilder::new()
-            .name("wrist_roll")
+            .name("wrist_roll_l")
             .joint_type(JointType::Rotational {
                 axis: Vector3::x_axis(),
             })
             .translation(Translation3::new(0.0, 0.0, -0.10))
             .finalize()
             .into();
-        connect![fixed => l0 => l1 => l2 => l3 => l4 => l5 => l6];
+        let l7: k::Node<f32> = NodeBuilder::new()
+            .name("wrist_roll")
+            .joint_type(JointType::Fixed)
+            .translation(Translation3::new(0.0, 0.0, -0.10))
+            .finalize()
+            .into();
+        connect![fixed => l0 => l1 => l2 => l3 => l4 => l5 => l6 => l7];
         fixed
     }
 
@@ -142,18 +148,43 @@ fn main() {
         c5.set_color(0.5, 0.0, 1.0);
         let mut c6 = window.add_cube(0.1, 0.1, 0.1);
         c6.set_color(0.0, 0.5, 0.2);
-        vec![c_fixed, c0, c1, c2, c3, c4, c5, c6]
+        let mut c7 = window.add_cube(0.1, 0.1, 0.1);
+        c7.set_color(0.5, 0.5, 0.2);
+        vec![c_fixed, c0, c1, c2, c3, c4, c5, c6, c7]
     }
 
     let opt = Opt::parse();
     let root = create_joint_with_link_array();
-    let arm = k::SerialChain::new_unchecked(k::Chain::from_root(root));
+    let arm = k::SerialChain::new_unchecked(k::Chain::from_root(root.clone()));
+    println!("arm: {arm}");
+
+    let mut i_nodes = root
+        .iter_descendants()
+        .map(|node| {
+            let new = k::Node::new(node.joint().clone());
+            new.set_link(node.link().clone());
+            let mut origin = node.origin();
+            origin.rotation = origin.rotation.inverse();
+            new.set_origin(origin);
+            new
+        })
+        .collect::<Vec<_>>();
+    i_nodes.reverse();
+    for i in 1..i_nodes.len() {
+        let parent = &i_nodes[i - 1];
+        i_nodes[i].set_parent(parent);
+    }
+
+    let arm_i = k::SerialChain::new_unchecked(k::Chain::from_nodes(i_nodes));
+    println!("arm_i: {arm_i}");
 
     let mut window = Window::new("k ui");
     window.set_light(Light::StickToCamera);
     let mut cubes = create_cubes(&mut window);
     let angles = vec![0.2, 0.2, 0.0, -1.5, 0.0, -0.3, 0.0];
     arm.set_joint_positions(&angles).unwrap();
+    let angles_i = angles.iter().rev().map(|x| *x).collect::<Vec<_>>();
+    arm_i.set_joint_positions(&angles_i).unwrap();
     let base_rot = Isometry3::from_parts(
         Translation3::new(0.0, 0.0, -0.6),
         UnitQuaternion::from_euler_angles(0.0, -1.57, -1.57),
@@ -165,8 +196,17 @@ fn main() {
                 UnitQuaternion::from_euler_angles(0.0, 0.0, 0.0),
             ),
     );
+    arm_i.iter().next().unwrap().set_origin(
+        base_rot
+            * Isometry3::from_parts(
+                Translation3::new(0.0, 0.0, 0.6),
+                UnitQuaternion::from_euler_angles(0.0, 0.0, 0.0),
+            ),
+    );
     arm.update_transforms();
+    arm_i.update_transforms();
     let end = arm.find("wrist_roll").unwrap();
+    let end_i = arm_i.find("fixed").unwrap();
     let mut target = end.world_transform().unwrap();
     let mut c_t = window.add_sphere(0.05);
     c_t.set_color(1.0, 0.2, 0.2);
@@ -177,6 +217,8 @@ fn main() {
     //solver.set_nullspace_function(Box::new(|vec| vec.iter().map(|x| -x).collect()));
     let _ = create_ground(&mut window);
 
+    let mut reversed = false;
+    let mut should_update = false;
     while window.render_with_camera(&mut arc_ball) {
         for mut event in window.events().iter() {
             if let WindowEvent::Key(code, Action::Release, _) = event.value {
@@ -185,14 +227,39 @@ fn main() {
                         // reset
                         arm.set_joint_positions(&angles).unwrap();
                         arm.update_transforms();
-                        target = end.world_transform().unwrap();
+                        arm_i.set_joint_positions(&angles_i).unwrap();
+                        arm_i.update_transforms();
+                        target = if reversed {
+                            end_i.world_transform().unwrap()
+                        } else {
+                            end.world_transform().unwrap()
+                        };
+                        should_update = true;
                     }
-                    Key::F => target.translation.vector[2] += 0.1,
-                    Key::B => target.translation.vector[2] -= 0.1,
-                    Key::R => target.translation.vector[0] -= 0.1,
-                    Key::L => target.translation.vector[0] += 0.1,
-                    Key::P => target.translation.vector[1] += 0.1,
-                    Key::N => target.translation.vector[1] -= 0.1,
+                    Key::F => {
+                        target.translation.vector[2] += 0.1;
+                        should_update = true;
+                    }
+                    Key::B => {
+                        target.translation.vector[2] -= 0.1;
+                        should_update = true;
+                    }
+                    Key::R => {
+                        target.translation.vector[0] -= 0.1;
+                        should_update = true;
+                    }
+                    Key::L => {
+                        target.translation.vector[0] += 0.1;
+                        should_update = true;
+                    },
+                    Key::P => {
+                        target.translation.vector[1] += 0.1;
+                        should_update = true;
+                    },
+                    Key::N => {
+                        target.translation.vector[1] -= 0.1;
+                        should_update = true;
+                    },
                     Key::X => solver.set_nullspace_function(Box::new(
                         k::create_reference_positions_nullspace_function(
                             vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -201,24 +268,50 @@ fn main() {
                     )),
                     Key::C => solver.clear_nullspace_function(),
                     Key::J => println!("joint positions: {:?}", arm.joint_positions()),
+                    Key::V => reversed = !reversed,
                     _ => {}
                 }
                 event.inhibited = true // override the default keyboard handler
             }
         }
-        let constraints = k::Constraints {
-            rotation_x: false,
-            ignored_joint_names: opt.ignored_joint_names.clone(),
-            ..Default::default()
-        };
-        solver
-            .solve_with_constraints(&arm, &target, &constraints)
-            .unwrap_or_else(|err| {
-                println!("Err: {err}");
-            });
+        if should_update {
+            let constraints = k::Constraints {
+                rotation_x: false,
+                ignored_joint_names: opt.ignored_joint_names.clone(),
+                ..Default::default()
+            };
+            let target_arm = if reversed { &arm_i } else { &arm };
+            solver
+                .solve_with_constraints(target_arm, &target, &constraints)
+                .unwrap_or_else(|err| {
+                    println!("Err: {err}");
+                });
+            should_update = false;
+        }
+
         c_t.set_local_transformation(target);
-        for (i, trans) in arm.update_transforms().iter().enumerate() {
-            cubes[i].set_local_transformation(*trans);
+        if reversed {
+            for (i, trans) in arm_i.update_transforms().iter().enumerate() {
+                cubes[i].set_local_transformation(*trans);
+            }
+            arm.set_joint_positions(
+                &arm_i
+                    .joint_positions()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+            target = end_i.world_transform().unwrap();
+        } else {
+            for (i, trans) in arm.update_transforms().iter().enumerate() {
+                cubes[i].set_local_transformation(*trans);
+            }
+            arm_i
+                .set_joint_positions(&arm.joint_positions().into_iter().rev().collect::<Vec<_>>())
+                .unwrap();
+
+            target = end.world_transform().unwrap();
         }
     }
 }
