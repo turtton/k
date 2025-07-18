@@ -158,33 +158,13 @@ fn main() {
     let arm = k::SerialChain::new_unchecked(k::Chain::from_root(root.clone()));
     println!("arm: {arm}");
 
-    let mut i_nodes = root
-        .iter_descendants()
-        .map(|node| {
-            let new = k::Node::new(node.joint().clone());
-            new.set_link(node.link().clone());
-            let mut origin = node.origin();
-            origin.rotation = origin.rotation.inverse();
-            new.set_origin(origin);
-            new
-        })
-        .collect::<Vec<_>>();
-    i_nodes.reverse();
-    for i in 1..i_nodes.len() {
-        let parent = &i_nodes[i - 1];
-        i_nodes[i].set_parent(parent);
-    }
-
-    let arm_i = k::SerialChain::new_unchecked(k::Chain::from_nodes(i_nodes));
-    println!("arm_i: {arm_i}");
+    // arm_iの作成はベース変換の後に移動
 
     let mut window = Window::new("k ui");
     window.set_light(Light::StickToCamera);
     let mut cubes = create_cubes(&mut window);
     let angles = vec![0.2, 0.2, 0.0, -1.5, 0.0, -0.3, 0.0];
     arm.set_joint_positions(&angles).unwrap();
-    let angles_i = angles.iter().rev().map(|x| *x).collect::<Vec<_>>();
-    arm_i.set_joint_positions(&angles_i).unwrap();
     let base_rot = Isometry3::from_parts(
         Translation3::new(0.0, 0.0, -0.6),
         UnitQuaternion::from_euler_angles(0.0, -1.57, -1.57),
@@ -196,17 +176,48 @@ fn main() {
                 UnitQuaternion::from_euler_angles(0.0, 0.0, 0.0),
             ),
     );
-    arm_i.iter().next().unwrap().set_origin(
-        base_rot
-            * Isometry3::from_parts(
-                Translation3::new(0.0, 0.0, 0.6),
-                UnitQuaternion::from_euler_angles(0.0, 0.0, 0.0),
-            ),
-    );
     arm.update_transforms();
+    
+    // まず元のarmチェーンの世界座標を計算・保存
+    let arm_nodes: Vec<_> = arm.iter().collect();
+    let world_transforms: Vec<_> = arm_nodes
+        .iter()
+        .map(|node| node.world_transform().unwrap())
+        .collect();
+    
+    // 逆転チェーンを作成
+    let mut i_nodes = Vec::new();
+    
+    // 逆順にノードを作成し、originを再計算
+    for i in (0..arm_nodes.len()).rev() {
+        let original_node = &arm_nodes[i];
+        let new_node = k::Node::new(original_node.joint().clone());
+        new_node.set_link(original_node.link().clone());
+        
+        if i == arm_nodes.len() - 1 {
+            // 最後のノード（元のwrist_roll、新しいルート）は元のルートの世界座標を設定
+            new_node.set_origin(world_transforms[0].clone());
+        } else {
+            // 親（逆転後は次のノード）に対する相対変換を計算
+            let parent_world = &world_transforms[i + 1];
+            let self_world = &world_transforms[i];
+            let relative_transform = parent_world.inverse() * self_world;
+            new_node.set_origin(relative_transform);
+        }
+        
+        i_nodes.push(new_node);
+    }
+    
+    // 親子関係を設定
+    for i in 1..i_nodes.len() {
+        i_nodes[i].set_parent(&i_nodes[i - 1]);
+    }
+
+    let arm_i = k::SerialChain::new_unchecked(k::Chain::from_nodes(i_nodes));
+    println!("arm_i: {arm_i}");
     arm_i.update_transforms();
     let end = arm.find("wrist_roll").unwrap();
-    let end_i = arm_i.find("fixed").unwrap();
+    let end_i = arm_i.find("wrist_roll").unwrap();
     let mut target = end.world_transform().unwrap();
     let mut c_t = window.add_sphere(0.05);
     c_t.set_color(1.0, 0.2, 0.2);
@@ -227,6 +238,7 @@ fn main() {
                         // reset
                         arm.set_joint_positions(&angles).unwrap();
                         arm.update_transforms();
+                        let angles_i = angles.iter().rev().map(|x| *x).collect::<Vec<_>>();
                         arm_i.set_joint_positions(&angles_i).unwrap();
                         arm_i.update_transforms();
                         target = if reversed {
